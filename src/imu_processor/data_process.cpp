@@ -12,6 +12,9 @@
 #include <pcl/kdtree/kdtree_flann.h>
 #include <opencv2/opencv.hpp>
 
+// 这部分是对点云进行畸变消除，用到了imu；
+// 注意在这个loam算法里，imu仅用于对原始点云进行运动畸变消除，而没有用于建图过程
+// 每一帧点云对应一个imu序列，imu进行过积分之后对点云中的每一个点做运动补偿
 using Sophus::SE3d;
 using Sophus::SO3d;
 

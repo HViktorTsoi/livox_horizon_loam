@@ -7,6 +7,12 @@ ros::Publisher pub_pcl_out0, pub_pcl_out1;
 uint64_t TO_MERGE_CNT = 1; 
 constexpr bool b_dbg_line = false;
 std::vector<livox_ros_driver::CustomMsgConstPtr> livox_data;
+
+/**
+ * 这部分是对点云的数据重新封装，把原始数据timestamp和线id压缩到intensity字段；
+ * 再把原始数据的反射率压缩到curvature字段
+ * @param livox_msg_in
+ */
 void LivoxMsgCbk1(const livox_ros_driver::CustomMsgConstPtr& livox_msg_in) {
   livox_data.push_back(livox_msg_in);
   if (livox_data.size() < TO_MERGE_CNT) return;

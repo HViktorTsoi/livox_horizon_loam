@@ -33,6 +33,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
+// 这部分代码主要是实现对相邻两帧提取的特征进行特征匹配，从而提供初步的laser里程计
 #include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
@@ -96,6 +97,7 @@ pcl::PointCloud<PointType>::Ptr laserCloudFullRes(
 int laserCloudCornerLastNum = 0;
 int laserCloudSurfLastNum = 0;
 
+// 当前帧相对与起点的绝对位姿，即里程计
 // Transformation from current frame to world frame
 Eigen::Quaterniond q_w_curr(1, 0, 0, 0);
 Eigen::Vector3d t_w_curr(0, 0, 0);
@@ -104,6 +106,7 @@ Eigen::Vector3d t_w_curr(0, 0, 0);
 double para_q[4] = {0, 0, 0, 1};
 double para_t[3] = {0, 0, 0};
 
+// 两帧之间的相对位姿
 Eigen::Map<Eigen::Quaterniond> q_last_curr(para_q);
 Eigen::Map<Eigen::Vector3d> t_last_curr(para_t);
 
@@ -114,6 +117,9 @@ std::queue<sensor_msgs::PointCloud2ConstPtr> surfLessFlatBuf;
 std::queue<sensor_msgs::PointCloud2ConstPtr> fullPointsBuf;
 std::mutex mBuf;
 
+// 将T帧的点云 利用相对位姿的初始估计值 转换到T-1的坐标系下
+// 其中初始估计值是T-2帧到T-1的相对位姿，存储为para_q和para_t这两个全局变量，这样-
+// 在ceres原地优化之后直接就能拿到值
 // undistort lidar point
 void TransformToStart(PointType const *const pi, PointType *const po) {
   // interpolation ratio
@@ -237,6 +243,7 @@ int main(int argc, char **argv) {
   while (ros::ok()) {
     ros::spinOnce();
 
+    // 读取从scan registeration里提取的sharp和flat等feature
     if (!cornerSharpBuf.empty() && !cornerLessSharpBuf.empty() &&
         !surfFlatBuf.empty() && !surfLessFlatBuf.empty() &&
         !fullPointsBuf.empty()) {
@@ -255,6 +262,7 @@ int main(int argc, char **argv) {
         ROS_BREAK();
       }
 
+      // 读rosmsg到点云中
       mBuf.lock();
       cornerPointsSharp->clear();
       pcl::fromROSMsg(*cornerSharpBuf.front(), *cornerPointsSharp);
@@ -287,6 +295,8 @@ int main(int argc, char **argv) {
         int surfPointsFlatNum = surfPointsFlat->points.size();
 
         TicToc t_opt;
+        // 他这里的外层循环两次有点误导人，实际上就是连续优化两次-
+        // (第二次是以第一次优化结果为初始值，在此基础上原地继续进行的，类似两个epoch)
         for (size_t opti_counter = 0; opti_counter < 2; ++opti_counter) {
           corner_correspondence = 0;
           plane_correspondence = 0;
@@ -298,6 +308,7 @@ int main(int argc, char **argv) {
           ceres::Problem::Options problem_options;
 
           ceres::Problem problem(problem_options);
+          // 需要优化的变量就是下面这两组，上一帧到这一帧的相对位姿
           problem.AddParameterBlock(para_q, 4, q_parameterization);
           problem.AddParameterBlock(para_t, 3);
 
@@ -308,11 +319,14 @@ int main(int argc, char **argv) {
           TicToc t_data;
           for (int i = 0; i < cornerPointsSharpNum; ++i) {
             TransformToStart(&(cornerPointsSharp->points[i]), &pointSel);
+            // ** 注意 这里是在上一帧的less sharp点云里查找邻域(包含曲率较大和曲率不那么大的点)
             kdtreeCornerLast->nearestKSearch(pointSel, 5, pointSearchInd,
                                              pointSearchSqDis);
 
+            // 保证查询到的K个点都是最近的
             if (pointSearchSqDis[4] < DISTANCE_SQ_THRESHOLD) {
               std::vector<Eigen::Vector3d> nearCorners;
+              // 近邻点的中点
               Eigen::Vector3d center(0, 0, 0);
               for (int j = 0; j < 5; j++) {
                 Eigen::Vector3d tmp(
@@ -324,6 +338,7 @@ int main(int argc, char **argv) {
               }
               center = center / 5.0;
 
+              // 计算协方差 这里实际上就是PCA
               Eigen::Matrix3d covMat = Eigen::Matrix3d::Zero();
               for (int j = 0; j < 5; j++) {
                 Eigen::Matrix<double, 3, 1> tmpZeroMean =
@@ -333,6 +348,10 @@ int main(int argc, char **argv) {
 
               Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(covMat);
 
+              // 计算协方差之后，找方差最大方向(即最大特征值对应的特征向量)
+              // 这里的原理：整个流程是要做PLICP，即点到线的ICP，点就是当前点云提取出来的每个特征点，而线就要-
+              // 在上一帧点云中找，这里就是查找当前点在上一帧中的若干近邻点，下边eigen[2] > 3 * eigen[1]的约束条件，
+              // 就是为了保证近邻点的形状是直线形(方差最大的方向远大于方差第二大的方向)，且直线的方向就是方差最大的方向。
               // if is indeed line feature
               // note Eigen library sort eigenvalues in increasing order
               Eigen::Vector3d unit_direction = saes.eigenvectors().col(2);
@@ -343,6 +362,7 @@ int main(int argc, char **argv) {
                 last_point_a = 0.1 * unit_direction + point_on_line;
                 last_point_b = -0.1 * unit_direction + point_on_line;
 
+                // last_point a和b是直线的两个端点，这样就可以唯一确定这条直线
                 Eigen::Vector3d curr_point(cornerPointsSharp->points[i].x,
                                            cornerPointsSharp->points[i].y,
                                            cornerPointsSharp->points[i].z);
@@ -353,6 +373,7 @@ int main(int argc, char **argv) {
                 else
                   s = 1.0;
 
+                // 匹配当前点，和上述在邻域中查找到的直线，目的是最小化点到直线的距离，类似PL-ICP
                 // printf(" Edge s------ %f  \n", s);
                 ceres::CostFunction *cost_function = LidarEdgeFactor::Create(
                     curr_point, last_point_a, last_point_b, s);
@@ -366,9 +387,12 @@ int main(int argc, char **argv) {
           // find correspondence for plane features
           for (int i = 0; i < surfPointsFlatNum; ++i) {
             TransformToStart(&(surfPointsFlat->points[i]), &pointSel);
+            // ** 注意 这里是在上一帧的less flat点云里查找邻域(包含平滑和不那么平滑的点)
             kdtreeSurfLast->nearestKSearch(pointSel, 5, pointSearchInd,
                                            pointSearchSqDis);
 
+            // 求当前点在上一帧K个邻居的平面法向量
+            // 这里的方法是求解方程AX+BY+CZ+1=0，就是空间平面方程, (A,B,C)就是法向量的估计值
             Eigen::Matrix<double, 5, 3> matA0;
             Eigen::Matrix<double, 5, 1> matB0 =
                 -1 * Eigen::Matrix<double, 5, 1>::Ones();
@@ -382,13 +406,19 @@ int main(int argc, char **argv) {
               }
               // find the norm of plane
               Eigen::Vector3d norm = matA0.colPivHouseholderQr().solve(matB0);
+              // 下边这两行代码是为了计算点到平面的距离更方便，提前计算出√(A^2+B^2+C^2)
+              // 这一项的值是1 / √(A^2+B^2+C^2)
               double negative_OA_dot_norm = 1 / norm.norm();
+              // 对法线归一化，相当于将A B C都除以√(A^2++B^2+C^2)
               norm.normalize();
 
+              // 通过点到拟合平面的距离来检验平面拟合的好不好，
               // Here n(pa, pb, pc) is unit norm of plane
               bool planeValid = true;
               for (int j = 0; j < 5; j++) {
                 // if OX * n > 0.2, then plane is not fit well
+                // 这里就是将点的坐标带入点-面距离方程来计算距离, 注意这里的法线已经归一化并且也算出了negative_OA_dot_norm，
+                // 所以就不用再除以方程中的√(A^2+B^2+C^2)项了
                 if (fabs(norm(0) *
                              laserCloudSurfLast->points[pointSearchInd[j]].x +
                          norm(1) *
@@ -402,6 +432,7 @@ int main(int argc, char **argv) {
               }
 
               if (planeValid) {
+                // 如果法线估计的准确，则从邻居点中选择3个，在匹配的时候优化相对位姿，以最小化当前点到上一帧这三个点构成平面的距离
                 Eigen::Vector3d curr_point(surfPointsFlat->points[i].x,
                                            surfPointsFlat->points[i].y,
                                            surfPointsFlat->points[i].z);
@@ -437,6 +468,7 @@ int main(int argc, char **argv) {
           // corner_correspondence, plane_correspondence);
           printf("data association time %f ms \n", t_data.toc());
 
+          // 因为前边的icp过程丢弃了很多特征点/面， 这里判断一下是不是保留了足够的特征
           if ((corner_correspondence + plane_correspondence) < 10) {
             printf(
                 "less correspondence! "
@@ -454,6 +486,7 @@ int main(int argc, char **argv) {
         }
         printf("optimization twice time %f \n", t_opt.toc());
 
+        // 将这一次求解出来的相对位姿累计到里程计上（这里为什么不直接用李代数表示，）
         t_w_curr = t_w_curr + q_w_curr * t_last_curr;
         q_w_curr = q_w_curr * q_last_curr;
         std::cout<<"t_w_curr: "<<t_w_curr.transpose()<<std::endl;
@@ -504,6 +537,7 @@ int main(int argc, char **argv) {
         }
       }
 
+      // 将当前帧的less sharp和less flat点云赋值给last帧，下一帧拿到的角点和边缘特征的匹配工作就在这两类点云上进行
       pcl::PointCloud<PointType>::Ptr laserCloudTemp = cornerPointsLessSharp;
       cornerPointsLessSharp = laserCloudCornerLast;
       laserCloudCornerLast = laserCloudTemp;
@@ -518,9 +552,11 @@ int main(int argc, char **argv) {
       // std::cout << "the size of corner last is " << laserCloudCornerLastNum
       // << ", and the size of surf last is " << laserCloudSurfLastNum << '\n';
 
+      // 用less sharp和less flat构建kdtree 供下一帧的特征匹配用
       kdtreeCornerLast->setInputCloud(laserCloudCornerLast);
       kdtreeSurfLast->setInputCloud(laserCloudSurfLast);
 
+      // 还是发布那些特征点云 只不过这次的frame id是 aft_mapped
       if (frameCount % skipFrameNum == 0) {
         frameCount = 0;
 

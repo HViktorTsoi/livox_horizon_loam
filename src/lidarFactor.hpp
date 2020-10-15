@@ -8,7 +8,7 @@
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <eigen3/Eigen/Dense>
-
+// 最小化点到直线距离的loss
 struct LidarEdgeFactor {
   LidarEdgeFactor(Eigen::Vector3d curr_point_, Eigen::Vector3d last_point_a_,
                   Eigen::Vector3d last_point_b_, double s_)
@@ -26,6 +26,7 @@ struct LidarEdgeFactor {
     Eigen::Matrix<T, 3, 1> lpb{T(last_point_b.x()), T(last_point_b.y()),
                                T(last_point_b.z())};
 
+    // 用待估计相对位姿变量 把当前点变换到上一帧的坐标系下
     // Eigen::Quaternion<T> q_last_curr{q[3], T(s) * q[0], T(s) * q[1], T(s) *
     // q[2]};
     Eigen::Quaternion<T> q_last_curr{q[3], q[0], q[1], q[2]};
@@ -36,6 +37,7 @@ struct LidarEdgeFactor {
     Eigen::Matrix<T, 3, 1> lp;
     lp = q_last_curr * cp + t_last_curr;
 
+    // loss项是转换后的点到直线的距离
     Eigen::Matrix<T, 3, 1> nu = (lp - lpa).cross(lp - lpb);
     Eigen::Matrix<T, 3, 1> de = lpa - lpb;
 
@@ -67,6 +69,7 @@ struct LidarPlaneFactor {
         last_point_l(last_point_l_),
         last_point_m(last_point_m_),
         s(s_) {
+    // 对于3个点，平面法线就是两个点的差与另两个点的差的外积
     ljm_norm = (last_point_j - last_point_l).cross(last_point_j - last_point_m);
     ljm_norm.normalize();
   }
@@ -83,7 +86,7 @@ struct LidarPlaneFactor {
     // T(last_point_m.z())};
     Eigen::Matrix<T, 3, 1> ljm{T(ljm_norm.x()), T(ljm_norm.y()),
                                T(ljm_norm.z())};
-
+    // 用待估计相对位姿变量 把当前点变换到上一帧的坐标系下
     // Eigen::Quaternion<T> q_last_curr{q[3], T(s) * q[0], T(s) * q[1], T(s) *
     // q[2]};
     Eigen::Quaternion<T> q_last_curr{q[3], q[0], q[1], q[2]};
@@ -94,6 +97,8 @@ struct LidarPlaneFactor {
     Eigen::Matrix<T, 3, 1> lp;
     lp = q_last_curr * cp + t_last_curr;
 
+    // loss的目的是最小化当前帧中的点p到上一帧的平面ljm的距离，在实现上就是最小化向量jp(或者lp,mp)与平面法向量的内积,即让jp尽量和法向量垂直
+    // 垂直的时候p点当然离平面最近(就在平面上)
     residual[0] = (lp - lpj).dot(ljm);
 
     return true;
@@ -128,11 +133,16 @@ struct LidarPlaneNormFactor {
     Eigen::Matrix<T, 3, 1> t_w_curr{t[0], t[1], t[2]};
     Eigen::Matrix<T, 3, 1> cp{T(curr_point.x()), T(curr_point.y()),
                               T(curr_point.z())};
+    // 用待估计绝对位姿变量 把当前点变换到上一帧的坐标系下
     Eigen::Matrix<T, 3, 1> point_w;
     point_w = q_w_curr * cp + t_w_curr;
 
     Eigen::Matrix<T, 3, 1> norm(T(plane_unit_norm.x()), T(plane_unit_norm.y()),
                                 T(plane_unit_norm.z()));
+    // 这个误差项的意思和LidarPlaneFactor完全一致，就是当前平面特征点到地图中平面的距离,
+    // 不知道为什么要重新定义一个Cost Function算子？
+    // 这里不理解的话看 https://zh.wikipedia.org/wiki/%E8%B7%9D%E7%A6%BB#%E7%82%B9%E5%88%B0%E5%B9%B3%E9%9D%A2%E7%9A%84%E8%B7%9D%E9%9B%A2 的点-面距离公式
+    // 其中norm.dot(point_w)就是分子, negative_OA_dot_norm就是分母
     residual[0] = norm.dot(point_w) + T(negative_OA_dot_norm);
     return true;
   }

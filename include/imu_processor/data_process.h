@@ -11,6 +11,7 @@
 #include "loam_horizon/common.h"
 #include "sophus/se3.hpp"
 
+// 一个MeasureGroup中是一帧点云对应一个imu序列，用来对点云做消除失真处理
 struct MeasureGroup {
   sensor_msgs::PointCloud2ConstPtr lidar;
   std::vector<sensor_msgs::Imu::ConstPtr> imu;
