@@ -1,6 +1,6 @@
-# Livox-Horizon-LOAM NOTED - CN
+# Livox-Horizon-LOAM NOTED
 ## Noted Code for LiDAR Odemetry and Mapping (LOAM) package for Livox Horizon LiDAR
-# Livox-Horizon-LOAM的阅读版本, 在关键部分的代码都添加了中文注释.
+### Livox-Horizon-LOAM的阅读版本, 在关键部分的代码都添加了中文注释.
 
 ![image](https://github.com/Livox-SDK/livox_horizon_loam/blob/master/rviz_cfg/fig/fig-1.png)
 **livox_horizon_loam** is a robust, low drift, and real time odometry and mapping package for [*Livox LiDARs*](https://www.livoxtech.com/), significant low cost and high performance LiDARs that are designed for massive industrials uses. Our package is **mainly designed for low-speed scenes(~5km/h)** and address many key issues: feature extraction and selection in a very limited FOV, and motion distortion compensation. We use [*Ceres-Solver*](http://ceres-solver.org/) for scan matching to avoid complicated differential geometry derivation. The codes are well structured and streamlined to improve readability and extendability.
